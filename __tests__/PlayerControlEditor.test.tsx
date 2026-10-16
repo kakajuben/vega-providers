@@ -9,6 +9,11 @@ import {
   PLAYER_CONTROL_IDS,
 } from '../src/lib/player/controlLayout';
 
+jest.mock('../src/lib/storage', () => ({settingsStorage: {
+  isAmbientVideoEnabled: () => false,
+  getAmbientIntensity: () => 0.35,
+}}));
+
 let mockIsTV = false;
 jest.mock('../src/lib/tv/constants', () => ({
   get isTV() {
@@ -17,6 +22,9 @@ jest.mock('../src/lib/tv/constants', () => ({
 }));
 jest.mock('@expo/vector-icons/MaterialCommunityIcons', () => 'Icon');
 jest.mock('@expo/vector-icons/MaterialIcons', () => 'Icon');
+jest.mock('../src/theme/M3PaletteContext', () => ({useM3HostTheme: () => ({})}));
+jest.mock('@expo/ui/jetpack-compose', () => ({Host: 'Host', Slider: 'Slider'}));
+jest.mock('@expo/ui/jetpack-compose/modifiers', () => ({fillMaxWidth: () => ({})}));
 jest.mock('../src/components/tv', () => {
   const ReactModule = require('react');
   return {
@@ -156,12 +164,36 @@ it('keeps a drag alive across selection updates and applies a cross-bar drop onl
   act(() => gesture.end({absoluteX: 160, absoluteY: 40}));
   expect(onHaptic).toHaveBeenCalledTimes(2);
   press('To top');
-  expect(onHaptic).toHaveBeenCalledTimes(2);
+  expect(onHaptic).toHaveBeenCalledTimes(3);
   expect(onSave).not.toHaveBeenCalled();
   press('Save');
   const saved = onSave.mock.calls[0][0];
-  expect(saved.top).toEqual(['sleep', 'lock', 'cast', 'audio']);
+  expect(saved.top).toEqual(['sleep', 'lock', 'cast', 'decoder', 'audio']);
   expect(saved.bottom).not.toContain('audio');
+  act(() => tree.unmount());
+});
+
+it('moves controls to Settings and commits style changes only on Save', () => {
+  const {tree, press, onSave} = makeEditor();
+  act(() => tree.root.findAllByProps({accessibilityLabel: 'Move audio'})[0].props.onAccessibilityTap());
+  press('To menu');
+  press('Style');
+  press('Short');
+  press('Right');
+  const opacity = tree.root.findAllByType('Slider' as any)[0];
+  act(() => opacity.props.onValueChange(0.5));
+  expect(onSave).not.toHaveBeenCalled();
+  act(() => opacity.props.onValueChangeFinished());
+  expect(onSave).not.toHaveBeenCalled();
+  press('Arrange');
+  press('Save');
+  expect(onSave.mock.calls[0][0].more).toEqual(['audio']);
+  expect(onSave.mock.calls[0][2]).toEqual(expect.objectContaining({labels: 'short', alignment: 'right', backgroundOpacity: 0.5}));
+  onSave.mockClear();
+  press('Style');
+  press('Hidden');
+  press('Cancel');
+  expect(onSave).not.toHaveBeenCalled();
   act(() => tree.unmount());
 });
 
@@ -179,8 +211,8 @@ it('supports TV moves, rejects an overflowing top bar, and cancels without savin
     'sleep',
     'lock',
     'cast',
+    'decoder',
     'speed',
-    'audio',
   ]);
   onSave.mockClear();
   press('To bottom');
@@ -188,4 +220,66 @@ it('supports TV moves, rejects an overflowing top bar, and cancels without savin
   expect(onSave).not.toHaveBeenCalled();
   expect(onClose).toHaveBeenCalledTimes(1);
   act(() => tree.unmount());
+});
+
+
+it('keeps ambient edits as a draft until Save and discards them on Cancel', () => {
+  const platform = require('react-native').Platform;
+  const originalOS = platform.OS;
+  platform.OS = 'android';
+  const {tree, press, onSave} = makeEditor();
+  press('Style');
+  press('Ambient lighting');
+  expect(onSave).not.toHaveBeenCalled();
+  press('Save');
+  expect(onSave.mock.calls[0][3]).toEqual({enabled: true, intensity: 0.35});
+  onSave.mockClear();
+  press('Ambient lighting');
+  press('Cancel');
+  expect(onSave).not.toHaveBeenCalled();
+  act(() => tree.unmount());
+  platform.OS = originalOS;
+  platform.OS = originalOS;
+});
+
+it('toggles ambient lighting directly with the phone switch and saves its value', () => {
+  const {Platform, Switch} = require('react-native');
+  const originalOS = Platform.OS;
+  Platform.OS = 'android';
+  try {
+    const {tree, press, onSave} = makeEditor();
+    press('Style');
+    const toggle = () => tree.root.findByType(Switch);
+    expect(toggle().props.value).toBe(false);
+    expect(toggle().props.pointerEvents).toBe('auto');
+    act(() => toggle().props.onValueChange(true));
+    expect(toggle().props.value).toBe(true);
+    expect(onSave).not.toHaveBeenCalled();
+    press('Save');
+    expect(onSave.mock.calls[0][3]).toEqual({enabled: true, intensity: 0.35});
+    act(() => toggle().props.onValueChange(false));
+    expect(toggle().props.value).toBe(false);
+    act(() => tree.unmount());
+  } finally {
+    Platform.OS = originalOS;
+  }
+});
+
+it('toggles ambient lighting using the TV remote row', () => {
+  const {Platform, Switch} = require('react-native');
+  const originalOS = Platform.OS;
+  Platform.OS = 'android';
+  mockIsTV = true;
+  try {
+    const {tree, press, onSave} = makeEditor();
+    press('Style');
+    expect(tree.root.findByType(Switch).props.onValueChange).toBeUndefined();
+    press('Ambient lighting');
+    expect(tree.root.findByType(Switch).props.value).toBe(true);
+    press('Save');
+    expect(onSave.mock.calls[0][3]).toEqual({enabled: true, intensity: 0.35});
+    act(() => tree.unmount());
+  } finally {
+    Platform.OS = originalOS;
+  }
 });
