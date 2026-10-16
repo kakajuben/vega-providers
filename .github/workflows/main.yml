@@ -4,7 +4,6 @@ on:
   schedule:
     # Runs at 12:00 AM India time (18:30 UTC of previous day)
     - cron: '30 18 * * *'
-  # Optional: Allow manual trigger
   workflow_dispatch:
     inputs:
       branch:
@@ -14,12 +13,12 @@ on:
 
 jobs:
   check_for_changes:
-    runs-on: ubuntu-24.04 # was ubuntu-latest
+    runs-on: ubuntu-latest
     outputs:
       has_changes: ${{ steps.check_changes.outputs.has_changes }}
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v5 # was v4
+        uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
@@ -63,23 +62,27 @@ jobs:
   verify-android-manifests:
     needs: check_for_changes
     if: ${{ needs.check_for_changes.outputs.has_changes == 'true' }}
-    runs-on: ubuntu-24.04 # was ubuntu-latest
+    runs-on: ubuntu-latest
     strategy:
-      fail-fast: false # added: let both variants finish so each shows its own result
       matrix:
         variant: [standalone, playstore]
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v5 # was v4
+        uses: actions/checkout@v4
 
       - name: Set up Node.js
-        uses: actions/setup-node@v5 # was v4
+        uses: actions/setup-node@v4
         with:
-          node-version: '22.x' # was 18.x (Node 18 is end-of-life)
+          node-version: '20.19.4'
           cache: 'npm'
 
+      - name: Verify Node version (fail early if unsupported)
+        run: |
+          echo "Node: $(node -v)"
+          node -e "const [major,minor,patch]=process.versions.node.split('.').map(Number); if (major<20 || (major===20 && minor<19) || (major===20 && minor===19 && patch<4)) { console.error('Node >=20.19.4 required'); process.exit(1); } console.log('Node version OK');"
+
       - name: Set up JDK 17
-        uses: actions/setup-java@v5 # was v4
+        uses: actions/setup-java@v4
         with:
           distribution: 'zulu'
           java-version: '17'
@@ -100,8 +103,7 @@ jobs:
           chmod +x gradlew
           ./gradlew :app:processReleaseMainManifest
           MANIFEST="app/build/intermediates/merged_manifest/release/processReleaseMainManifest/AndroidManifest.xml"
-          # -En (no -q): prints the offending permission lines in the log
-          if grep -En 'MANAGE_EXTERNAL_STORAGE|READ_EXTERNAL_STORAGE|READ_MEDIA_VIDEO|WRITE_EXTERNAL_STORAGE' "$MANIFEST"; then
+          if grep -Eq 'MANAGE_EXTERNAL_STORAGE|READ_EXTERNAL_STORAGE|READ_MEDIA_VIDEO|WRITE_EXTERNAL_STORAGE' "$MANIFEST"; then
             echo "Forbidden broad storage permission found in ${{ matrix.variant }} manifest"
             exit 1
           fi
@@ -118,21 +120,17 @@ jobs:
   build-android:
     needs: [check_for_changes, verify-android-manifests]
     if: ${{ needs.check_for_changes.outputs.has_changes == 'true' }}
-    runs-on: ubuntu-24.04 # was ubuntu-latest
-    # Use the nightly environment with the required secrets
+    runs-on: ubuntu-latest
     environment: nightly
     permissions:
-      # Need these permissions for creating GitHub releases
       contents: write
-
     steps:
       - name: Checkout specific branch
-        uses: actions/checkout@v5 # was v4
+        uses: actions/checkout@v4
         with:
           ref: ${{ github.event.inputs.branch || 'main' }}
           fetch-depth: 0
 
-      # Get the latest commit info for Discord notification - WITH SANITIZATION
       - name: Get commit info
         id: commit_info
         run: |
@@ -153,32 +151,34 @@ jobs:
           echo "COMMIT_DATE=$DATE" >> $GITHUB_ENV
 
       - name: Set up Node.js
-        uses: actions/setup-node@v5 # was v4
+        uses: actions/setup-node@v4
         with:
-          node-version: '22.x' # was 18.x (Node 18 is end-of-life)
+          node-version: '20.19.4'
           cache: 'npm'
+
+      - name: Verify Node version (fail early if unsupported)
+        run: |
+          echo "Node: $(node -v)"
+          node -e "const [major,minor,patch]=process.versions.node.split('.').map(Number); if (major<20 || (major===20 && minor<19) || (major===20 && minor===19 && patch<4)) { console.error('Node >=20.19.4 required'); process.exit(1); } console.log('Node version OK');"
 
       - name: Install dependencies
         run: npm ci
 
       - name: Set up JDK 17
-        uses: actions/setup-java@v5 # was v4
+        uses: actions/setup-java@v4
         with:
           distribution: 'zulu'
           java-version: '17'
 
-      # Decode the keystore from your secret
       - name: Decode keystore
         run: |
           echo "${{ secrets.KEYSTORE_BASE64 }}" | base64 --decode > android/app/release.keystore
           # Verify the keystore was created properly
           ls -la android/app/release.keystore
 
-      # Make gradlew executable
       - name: Make gradlew executable
         run: chmod +x android/gradlew
 
-      # Define the build timestamp
       - name: Set build timestamp
         run: |
           echo "BUILD_DATE=$(date -u '+%Y-%m-%d')" >> $GITHUB_ENV
@@ -186,7 +186,6 @@ jobs:
           echo "Build started at: $(date -u '+%Y-%m-%d %H:%M:%S UTC')"
           echo "Builder: himanshu8443"
 
-      # Build the APKs with DIRECT SIGNING PARAMETERS as requested
       - name: Build Android App with Direct Signing Parameters
         run: |
           cd android
@@ -198,7 +197,6 @@ jobs:
             -Pandroid.injected.signing.key.password="${{ secrets.KEY_PASSWORD }}" \
             --stacktrace
 
-      # Find and identify the APKs
       - name: Identify APKs
         id: apk_files
         run: |
@@ -218,10 +216,8 @@ jobs:
           ARMV7_APK=$(find android/app/build/outputs/apk/release -name "*armeabi-v7a*.apk" -not -name "*unsigned*" | head -1)
           ARMV8_APK=$(find android/app/build/outputs/apk/release -name "*arm64-v8a*.apk" -not -name "*unsigned*" | head -1)
 
-          # Create a comma-separated list of APK paths for the release step
           APK_PATHS=""
 
-          # Set the file paths with clean names
           if [ -f "$UNIVERSAL_APK" ]; then
             UNIVERSAL_APK_NAME="Vega-nightly-v${VERSION}-universal-${BUILD_DATE}.apk"
             cp "$UNIVERSAL_APK" "apks/${UNIVERSAL_APK_NAME}"
@@ -255,19 +251,16 @@ jobs:
             echo "ARMV8_APK_FOUND=false" >> $GITHUB_ENV
           fi
 
-          # Remove trailing comma if any
           APK_PATHS=$(echo $APK_PATHS | sed 's/,$//')
           echo "apk_paths=${APK_PATHS}" >> $GITHUB_OUTPUT
 
           echo "APKs prepared for GitHub Release:"
           ls -la apks/
 
-          # Create a tag name for the release
           NIGHTLY_DATE=$(date -u '+%Y%m%d')
           RELEASE_TAG="nightly-${NIGHTLY_DATE}"
           echo "RELEASE_TAG=${RELEASE_TAG}" >> $GITHUB_ENV
 
-      # Delete ALL previous nightly releases (not just yesterday's)
       - name: Delete All Previous Nightly Releases
         run: |
           # Fetch all tags
@@ -278,13 +271,11 @@ jobs:
 
           if [ -n "$NIGHTLY_TAGS" ]; then
             echo "Found previous nightly tags: $NIGHTLY_TAGS"
-
             for TAG in $NIGHTLY_TAGS; do
               echo "Deleting tag: $TAG"
               git tag -d $TAG 2>/dev/null || true
               git push --delete origin $TAG 2>/dev/null || true
 
-              # Also delete the release via API
               RELEASE_ID=$(curl -s -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
                 "https://api.github.com/repos/${{ github.repository }}/releases/tags/$TAG" | \
                 grep -o '"id": [0-9]*' | head -1 | sed 's/"id": //')
@@ -299,7 +290,6 @@ jobs:
             echo "No previous nightly tags found"
           fi
 
-      # Create a dedicated GitHub Release just for nightly builds
       - name: Create GitHub Release
         id: create_release
         uses: softprops/action-gh-release@v1
@@ -315,12 +305,10 @@ jobs:
             **Build Date:** ${{ env.BUILD_DATE }}
             **Commit:** [${{ env.COMMIT_HASH }}](https://github.com/${{ github.repository }}/commit/${{ github.sha }}) by ${{ env.COMMIT_AUTHOR }}
             **Commit Message:** ${{ env.COMMIT_MSG }}
-
           files: ${{ steps.apk_files.outputs.apk_paths }}
           draft: false
           prerelease: true
 
-      # Also upload APKs as GitHub artifacts as backup
       - name: Upload APKs as GitHub artifacts
         uses: actions/upload-artifact@v4
         with:
@@ -328,14 +316,11 @@ jobs:
           path: apks/*.apk
           if-no-files-found: warn
 
-      # Create and run a dedicated Discord notification script with direct download links
       - name: Create Discord notification script
         run: |
-          # Get the tag name to construct proper download URLs directly
           REPO_OWNER="${GITHUB_REPOSITORY_OWNER}"
           REPO_NAME="${GITHUB_REPOSITORY#*/}"
 
-          # Construct download URLs directly using the release tag and filenames
           if [ "$UNIVERSAL_APK_FOUND" = "true" ]; then
             UNIVERSAL_DOWNLOAD_URL="https://github.com/${GITHUB_REPOSITORY}/releases/download/${RELEASE_TAG}/${UNIVERSAL_APK_NAME}"
             echo "UNIVERSAL_DOWNLOAD_URL=$UNIVERSAL_DOWNLOAD_URL" >> $GITHUB_ENV
@@ -351,24 +336,17 @@ jobs:
             echo "ARMV8_DOWNLOAD_URL=$ARMV8_DOWNLOAD_URL" >> $GITHUB_ENV
           fi
 
-          # Debug: Print out the URLs to verify they're correct
           echo "Universal APK URL: $UNIVERSAL_DOWNLOAD_URL"
           echo "ARMv7 APK URL: $ARMV7_DOWNLOAD_URL"
           echo "ARMv8 APK URL: $ARMV8_DOWNLOAD_URL"
 
           cat > send_discord.sh << 'EOF'
           #!/bin/bash
-
-          # Get environment variables
           REPO_URL="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}"
           COMMIT_URL="${REPO_URL}/commit/${GITHUB_SHA}"
           RELEASE_URL="${REPO_URL}/releases/tag/${RELEASE_TAG}"
-
-          # Format the commit message for JSON (escape properly)
           FORMATTED_COMMIT_MSG=$(echo "$COMMIT_MSG" | sed 's/"/\\"/g')
           CURRENT_TIMESTAMP=$(date -u --iso-8601=seconds)
-
-          # Check which download links are available and build the download section
           DOWNLOAD_SECTION=""
 
           if [ -n "$UNIVERSAL_DOWNLOAD_URL" ]; then
@@ -383,10 +361,8 @@ jobs:
             DOWNLOAD_SECTION="${DOWNLOAD_SECTION}• [📱 **ARMv8 APK**](${ARMV8_DOWNLOAD_URL}) - For newer Android devices (recommended)\n"
           fi
 
-          # Add link to all downloads
           DOWNLOAD_SECTION="${DOWNLOAD_SECTION}\n[View all downloads on GitHub](${RELEASE_URL})"
 
-          # Create the JSON payload
           cat > discord_payload.json << EOJSON
           {
             "embeds": [
@@ -422,7 +398,7 @@ jobs:
                   },
                   {
                     "name": "Which APK should I download?",
-                    "value": "• **Universal**: If you're not sure about your device\n• **ARMv8**: For phones from the last ~5 years (smaller file size)\n• **ARMv7**: For very old devices only",
+                    "value": "• **Universal**: If you're not sure about your device\n• **ARMv8**: For phones from the last ~5 years (smaller file size)\n• **ARMv7**: For very old devices",
                     "inline": false
                   }
                 ],
@@ -435,7 +411,6 @@ jobs:
           }
           EOJSON
 
-          # Send to Discord
           if [ -n "${DISCORD_WEBHOOK}" ]; then
             curl -H "Content-Type: application/json" -d @discord_payload.json "${DISCORD_WEBHOOK}"
             echo "Discord notification sent successfully"
