@@ -1,4 +1,5 @@
-Name: Nightly Build
+name: Nightly Build
+
 
 on:
   schedule:
