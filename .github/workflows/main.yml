@@ -1,6 +1,5 @@
 name: Nightly Build
 
-
 on:
   schedule:
     # Runs at 12:00 AM India time (18:30 UTC of previous day)
@@ -164,6 +163,9 @@ jobs:
 
       - name: Install dependencies
         run: npm ci
+
+      - name: Generate Android project
+        run: npx expo prebuild --platform android --clean --no-install
 
       - name: Set up JDK 17
         uses: actions/setup-java@v4
