@@ -1,4 +1,4 @@
-name: Nightly Build
+Name: Nightly Build
 
 on:
   schedule:
@@ -172,6 +172,7 @@ jobs:
 
       - name: Decode keystore
         run: |
+          mkdir -p android/app
           echo "${{ secrets.KEYSTORE_BASE64 }}" | base64 --decode > android/app/release.keystore
           # Verify the keystore was created properly
           ls -la android/app/release.keystore
